@@ -1,22 +1,13 @@
-/* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2023 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
-/* USER CODE END Header */
-/* Includes ------------------------------------------------------------------*/
+/*
+ ______     ______     ______     __    __    
+/\  ___\   /\  == \   /\  __ \   /\ "-./  \   
+\ \ \____  \ \  __<   \ \  __ \  \ \ \-./\ \  
+ \ \_____\  \ \_\ \_\  \ \_\ \_\  \ \_\ \ \_\ 
+  \/_____/   \/_/ /_/   \/_/\/_/   \/_/  \/_/
+COMPACT RAPID ACQUISITION MACHINE
+Purdue Formula SAE 2024
+Eric Min
+*/
 #include "main.h"
 #include "stdio.h"
 #include "string.h"
@@ -24,50 +15,23 @@
 #include "stm32f407xx.h"
 #include "stm32f4xx_hal_can.h"
 
-/* Private includes ----------------------------------------------------------*/
-/* USER CODE BEGIN Includes */
-
-/* USER CODE END Includes */
-
-/* Private typedef -----------------------------------------------------------*/
-/* USER CODE BEGIN PTD */
-
-/* USER CODE END PTD */
-
-/* Private define ------------------------------------------------------------*/
-/* USER CODE BEGIN PD */
-
-/* USER CODE END PD */
-
-/* Private macro -------------------------------------------------------------*/
-/* USER CODE BEGIN PM */
-
-/* USER CODE END PM */
-
-/* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
-
-CAN_HandleTypeDef hcan1;
-CAN_HandleTypeDef hcan2;
-
 I2C_HandleTypeDef hi2c1;
-
 RTC_HandleTypeDef hrtc;
-
 SD_HandleTypeDef hsd;
-
 SPI_HandleTypeDef hspi1;
 SPI_HandleTypeDef hspi2;
-
 UART_HandleTypeDef huart3;
+CAN_HandleTypeDef hcan1;
+CAN_HandleTypeDef hcan2;
+CAN_FilterTypeDef can1Filter;
+DMA_HandleTypeDef hdma_adc1;
+TIM_HandleTypeDef hdma_tim1_ch1;
 
-#define NUM_LOAD_CELLS 8
+#define NUM_LOAD_CELLS 4
+#define ADC_BUF_LEN 4096
+#define TX_BUF_LEN 100
 
-/* USER CODE BEGIN PV */
-
-/* USER CODE END PV */
-
-/* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_ADC1_Init(void);
@@ -79,49 +43,60 @@ static void MX_SDIO_SD_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_SPI2_Init(void);
 static void MX_USART3_UART_Init(void);
-/* USER CODE BEGIN PFP */
+static void MX_DMA_Init(void);
+static void MX_TIM1_Init(void);
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc);
 
-/* USER CODE END PFP */
-
-/* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 0 */
-
-/* USER CODE END 0 */
+uint16_t adcData[ADC_BUF_LEN];
+uint8_t UART_txBuf[TX_BUF_LEN];
+uint8_t adc_conv_complete_flag = 0;
 
 /**
-  * @brief  The application entry point.
+  * @brief  Application main loop
   * @retval int
-  */
-int main(void)
-{
-  /* USER CODE BEGIN 1 */
-
-  /* USER CODE END 1 */
-
-  /* MCU Configuration--------------------------------------------------------*/
-
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+*/
+int main(void) {
   HAL_Init();
 
-  /* USER CODE BEGIN Init */
-
-  /* USER CODE END Init */
-
-  /* Configure the system clock */
   SystemClock_Config();
 
-  /* USER CODE BEGIN SysInit */
-
-  /* USER CODE END SysInit */
-
-  /* Initialize all configured peripherals */
+  MX_DMA_Init(); // THIS CALL SHOULD GO BEFORE ANY OTHER PERIPHERAL INIT CALL. IF NOT, NOTHING WORKS.
   MX_GPIO_Init();
   MX_ADC1_Init();
   MX_CAN1_Init();
   MX_USART3_UART_Init();
+  MX_TIM1_Init();
 
-  CAN_FilterTypeDef can1Filter;
+  CAN_TxHeaderTypeDef CAN_loadCellHandler;
+  uint8_t loadCellDataFrame[8];
+  CAN_loadCellHandler.StdId = 0x5AE;
+  CAN_loadCellHandler.ExtId = 0x5AE;
+  CAN_loadCellHandler.RTR = CAN_RTR_DATA;
+  CAN_loadCellHandler.IDE = CAN_ID_STD;
+  CAN_loadCellHandler.DLC = sizeof(loadCellDataFrame);
 
+  uint32_t txMailbox;
+
+  //HAL_CAN_Start(&hcan1);
+  uint32_t currentTime = HAL_GetTick();
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adcData, ADC_BUF_LEN);
+  //while(HAL_GetTick() - currentTime <= 3000) {
+  for (;;) {
+    snprintf(UART_txBuf, TX_BUF_LEN, "PA0: %d, PA1: %d, PA2: %d, PA3: %d\r\n", adcData[0], adcData[1], adcData[2], adcData[3]);
+    HAL_UART_Transmit(&huart3, (uint8_t *)UART_txBuf, sizeof(UART_txBuf), HAL_MAX_DELAY);
+    HAL_Delay(100);
+  }
+}
+
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc){
+  //HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6, 1);
+}
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
+  HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_6);
+}
+
+int configureCAN1() {
   can1Filter.FilterActivation = CAN_FILTER_ENABLE;
   can1Filter.FilterBank = 18;  // which filter bank to use from the assigned ones
   can1Filter.FilterFIFOAssignment = CAN_FILTER_FIFO0;
@@ -134,36 +109,6 @@ int main(void)
   can1Filter.SlaveStartFilterBank = 20;  // how many filters to assign to the CAN1 (master can)
 
   HAL_CAN_ConfigFilter(&hcan1, &can1Filter);
-
-  CAN_TxHeaderTypeDef txHeader;
-  uint8_t txData[8];
-  txHeader.StdId = 0x5AE;
-  txHeader.ExtId = 0x5AE;
-  txHeader.RTR = CAN_RTR_DATA;
-  txHeader.IDE = CAN_ID_STD;
-  txHeader.DLC = sizeof(txData);
-  uint32_t txMailbox;
-  HAL_CAN_Start(&hcan1);
-  uint32_t startTime = HAL_GetTick();
-  // while(HAL_GetTick() - startTime <= 3000) {
-
-  while(1) {
-    HAL_ADC_Start(&hadc1);
-    HAL_ADC_PollForConversion (&hadc1, HAL_MAX_DELAY);
-    uint16_t adcData = HAL_ADC_GetValue(&hadc1);
-    uint8_t usart3TxData[64];
-    txData[0] = adcData / 100;
-    txData[1] = adcData % 100;
-    sprintf(usart3TxData, "%.4d\r\n", adcData);
-    HAL_UART_Transmit(&huart3, usart3TxData, strlen(usart3TxData), HAL_MAX_DELAY);
-    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_7);
-    if (HAL_CAN_AddTxMessage(&hcan1, &txHeader, txData, &txMailbox) != HAL_OK) {
-      Error_Handler();
-    }
-    while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) != 3);
-    HAL_Delay(50);
-  }
-  /* USER CODE END 3 */
 }
 
 /**
@@ -241,8 +186,8 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 1;
-  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.NbrOfConversion = 4;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
@@ -251,9 +196,36 @@ static void MX_ADC1_Init(void)
 
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
   */
-  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Rank = 2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_2;
+  sConfig.Rank = 3;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Rank = 4;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -520,6 +492,81 @@ static void MX_SPI2_Init(void)
 }
 
 /**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  hdma_tim1_ch1.Instance = TIM1;
+  hdma_tim1_ch1.Init.Prescaler = 0;
+  hdma_tim1_ch1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  hdma_tim1_ch1.Init.Period = 200;
+  hdma_tim1_ch1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  hdma_tim1_ch1.Init.RepetitionCounter = 0;
+  hdma_tim1_ch1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&hdma_tim1_ch1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&hdma_tim1_ch1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&hdma_tim1_ch1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&hdma_tim1_ch1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&hdma_tim1_ch1, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&hdma_tim1_ch1, &sBreakDeadTimeConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+  HAL_TIM_MspPostInit(&hdma_tim1_ch1);
+
+}
+
+/**
   * @brief USART3 Initialization Function
   * @param None
   * @retval None
@@ -553,6 +600,25 @@ static void MX_USART3_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA2_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+  /* DMA2_Stream1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream1_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -569,16 +635,17 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOE_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : PA7 */
-  GPIO_InitStruct.Pin = GPIO_PIN_7;
+  GPIO_InitStruct.Pin = GPIO_PIN_6;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
 /* USER CODE END MX_GPIO_Init_2 */
